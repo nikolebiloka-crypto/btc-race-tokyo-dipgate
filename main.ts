@@ -31,6 +31,12 @@ function sma(seq: number): number | null {
   return smaSum / GATE_LEN;
 }
 
+// Review pass 1: split magic dip threshold into a helper so the entry condition reads as prose.
+/** True when the latest close is a qualifying dip under the recent high. */
+function isDip(seq: number, hi: number): boolean {
+  return hi > 0 && closes[seq]! <= hi * (1 - DIP_BP);
+}
+
 await runBars({
   onBatch(state: BarsState, batch: Batch): OrderInput[] {
     const bar = batch.bars[0];
@@ -69,9 +75,10 @@ await runBars({
         if (v > hi) hi = v;
       }
       const s = sma(seq);
-      const dip = c <= hi * (1 - DIP_BP);
+      const dip = isDip(seq, hi);
       const gate = s != null && c > s;
       if (dip && gate && state.cash > 1_000_000n) {
+        // Review pass 3: no console output — stdout is the wire protocol, printing breaks the batch reply.
         buyInFlight = true;
         trailFloor = 0;
         orders.push({ side: 'buy', symbol: bar.symbol, notional_quote_units: state.cash, max_slippage_bps: MAX_SLIPPAGE_BPS });
