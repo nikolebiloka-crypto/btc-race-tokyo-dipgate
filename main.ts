@@ -16,10 +16,13 @@ const DIP_BP = 0.0055; // dip depth: close <= recentHigh * (1 - DIP_BP)
 const GATE_LEN = 60; // SMA length for the trend gate
 const TP_BP = 0.009; // take-profit above entry
 const MAX_SLIPPAGE_BPS = 400; // generous: modelled 2 bps + impact (~7 bps full size)
+const ARM_BP = 0.005; // arm the trailing floor once 0.5% above entry
+const TRAIL_BP = 0.003; // trail width once armed
 
 const closes: (number | null)[] = []; // closes by seq
 let entryPx: number | null = null; // position entry price (fill price)
 let buyInFlight = false; // a buy was sent and not yet resolved
+let trailFloor = 0; // trailing sell floor, rises with closes while armed
 let smaSum = 0; // sum of the last GATE_LEN closes
 
 /** Rolling SMA of the last GATE_LEN closes ending at seq; null while warming up. */
@@ -35,6 +38,7 @@ await runBars({
     const seq = batch.seq;
     const c = Number(bar.c) / 1e8;
     closes[seq] = c;
+    if (entryPx != null) trailFloor = Math.max(trailFloor, c * (1 - TRAIL_BP));
 
     // maintain the rolling SMA sum
     smaSum += c;
@@ -45,7 +49,7 @@ await runBars({
     for (const f of batch.fills) {
       if (f.side === 'buy') {
         buyInFlight = false;
-        if (f.status === 'filled') entryPx = Number(f.price) / 1e8; // raw price (price_scale 8) -> USDC
+        if (f.status === 'filled') { entryPx = Number(f.price) / 1e8; trailFloor = 0; } // raw price (price_scale 8) -> USDC
       }
       if (f.side === 'sell' && f.status === 'filled') entryPx = null;
     }
@@ -69,10 +73,14 @@ await runBars({
       const gate = s != null && c > s;
       if (dip && gate && state.cash > 1_000_000n) {
         buyInFlight = true;
+        trailFloor = 0;
         orders.push({ side: 'buy', symbol: bar.symbol, notional_quote_units: state.cash, max_slippage_bps: MAX_SLIPPAGE_BPS });
       }
     } else if (entryPx != null) {
+      // take profit, or trail the position once it is 0.5% above entry to lock in gains
       if (c >= entryPx * (1 + TP_BP)) {
+        orders.push({ side: 'sell', symbol: bar.symbol, qty: heldQty.qty, max_slippage_bps: MAX_SLIPPAGE_BPS });
+      } else if (c >= entryPx * (1 + ARM_BP) && c <= trailFloor) {
         orders.push({ side: 'sell', symbol: bar.symbol, qty: heldQty.qty, max_slippage_bps: MAX_SLIPPAGE_BPS });
       }
     }
